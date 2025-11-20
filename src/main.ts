@@ -6,6 +6,8 @@ import { history } from "@codemirror/commands";
 import { closeBrackets } from "@codemirror/autocomplete";
 import { Layout, PlotData } from "plotly.js-basic-dist";
 import "./plotly-custom.min.js";
+import { parse_spec, parse_spec_old, parse_spec_with_errors } from "./parser-export";
+import { linter, Diagnostic } from "@codemirror/lint";
 
 // DOM management utility functions
 var $ = document.querySelector.bind(document);
@@ -678,7 +680,7 @@ function match_one(
     }
     let mmatch = name.match(matcher.regexp);
     if (mmatch) {
-      match.push(...mmatch.slice(1));
+      match.push(...mmatch);
     }
   }
   if (match.length) {
@@ -764,7 +766,7 @@ function get_data_from_matchers(spec: PlottingSpec) {
   });
   if (!matched) {
     console.warn("No point matched");
-    return;
+    return store;
   }
 
   // extract all series
@@ -825,122 +827,6 @@ function processing(spec: PlottingSpec, store: Store, root: HTMLElement) {
   }
 }
 
-function parse_spec(text: string) {
-  var lines = text.split("\n");
-  var state = "matchers";
-  var spec = { matchers: [], processing: [] };
-  lines.forEach((e: string) => {
-    // strip comments, whitespaces
-    let index = e.indexOf("//");
-    if (index != -1) {
-      e = e.substring(0, index);
-    }
-    e = e.trim();
-    if (state == "matchers") {
-      // change parsing state if a matcher has been matched
-      // and an empty line is found
-      if (e.length == 0 && spec.matchers.length >= 1) {
-        state = "processing";
-        return;
-      } else if (e.length == 0) {
-        // comments or whitespace only before matchers
-        return;
-      }
-
-      // Find field matches and strip them out completely.
-      var reg = /###([a-zA-Z0-9_]+)/g;
-      var fields = [...e.matchAll(reg)].map((e) => e[1]);
-      var regexp_expanded = e.replace(reg, "").trim();
-
-      reg = /##([a-zA-Z0-9_]+)/g;
-      // Find all time series identifier, remove ##
-      var labels = [...regexp_expanded.matchAll(reg)].map((e) => e[1]);
-      regexp_expanded = regexp_expanded.replace(reg, "(-?[0-9.]+)");
-
-      let regexp = regexp_expanded;
-      let strip_first_last = false;
-      // Exact match when surrounded by "
-      if (
-        regexp_expanded[0] == '"' &&
-        regexp_expanded[regexp_expanded.length - 1] == '"'
-      ) {
-        regexp = "^" + regexp_expanded.slice(1, -1) + "$";
-        strip_first_last = true;
-      }
-      // If there's no capture group, the label will be the regexp itself
-      if (!labels.length) {
-        if (strip_first_last) {
-          labels = [regexp_expanded.slice(1, -1)];
-        } else {
-          labels = [regexp_expanded];
-        }
-      }
-      spec.matchers.push({
-        regexp: regexp,
-        labels: labels,
-        fields: fields,
-      });
-    } else if (state == "processing") {
-      // Matches:
-      // aaa = bbb(ccc)
-      // aaa = bbb(ccc, ddd)
-      // bbb(ccc)
-      var proc =
-        /(?:([a-zA-Z0-9_]+)? ?= ?)?([a-zA-Z0-9_]+)[(]([a-zA-Z0-9:., _]+)[)]/;
-
-      var matches = e.match(proc);
-      if (!matches) {
-        return;
-      }
-      var assignment: string;
-      var operator: string;
-      var args: string;
-      // no assignment
-      if (matches.length == 2) {
-        operator = matches[1];
-        args = matches[2];
-      } else {
-        assignment = matches[1];
-        operator = matches[2];
-        args = matches[3];
-        console.log(args);
-      }
-      const valid_operators = [
-        "derivative",
-        "integral",
-        "start_times",
-        "sum",
-        "histogram",
-        "histlog",
-        "histprob",
-        "stats",
-        "plot",
-        "add",
-        "sub",
-        "mul",
-        "div",
-        "median",
-        "mean",
-        "geomean",
-        "max",
-        "min",
-        "stddev",
-        "variance",
-        "percentile",
-      ];
-      if (!valid_operators.includes(operator)) {
-        console.error(`syntax error: ${operator} isn't in ${valid_operators}`);
-        return;
-      }
-      spec.processing.push({
-        args: args,
-        operator: operator,
-        assignment: assignment,
-      });
-    }
-  });
-  return spec;
-}
 
 // Micro abstraction over browser.storage.local (Web Extension)
 // and localStorage (web)
@@ -987,8 +873,31 @@ function doit(target: EditorView): boolean {
   const charts_root = root.querySelector(".charts") as HTMLElement;
   charts_root.innerHTML = "";
 
-  var spec = parse_spec(content);
+  const parseResult = parse_spec_with_errors(content);
+
+  if (parseResult.errors.length > 0) {
+    const errorDiv = html("div", ["parse-errors"]);
+    errorDiv.innerHTML = "<h3>Parsing Errors:</h3>";
+    const errorList = html("ul", [], errorDiv);
+    parseResult.errors.forEach((error) => {
+      const errorItem = html("li", [], errorList);
+      errorItem.textContent = `Line ${error.line}, Column ${error.column}: ${error.message}`;
+    });
+    charts_root.appendChild(errorDiv);
+    root.querySelector(".variables").innerHTML = "";
+    return false;
+  }
+
+  var spec = parseResult.spec!;
   var store = get_data_from_matchers(spec);
+
+  if (!store) {
+    const errorDiv = html("div", ["parse-errors"]);
+    errorDiv.innerHTML = "<h3>Error:</h3><p>Failed to get data from matchers. Make sure you're running this in the Firefox Profiler context with markers available.</p>";
+    charts_root.appendChild(errorDiv);
+    root.querySelector(".variables").innerHTML = "";
+    return false;
+  }
 
   if ((root.querySelector(".autoplot") as HTMLInputElement).checked) {
     plot(store.coherent, charts_root);
@@ -1110,6 +1019,28 @@ function doc_changed_cb(e: HTMLDivElement) {
   }
 }
 
+function plottingSpecLinter(view: EditorView): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const content = view.state.doc.toString();
+
+  const result = parse_spec_with_errors(content);
+
+  for (const error of result.errors) {
+    const line = view.state.doc.line(error.line);
+    const from = line.from + (error.column - 1);
+    const to = error.length ? Math.min(from + error.length, line.to) : line.to;
+
+    diagnostics.push({
+      from: from,
+      to: to,
+      severity: "error",
+      message: error.message,
+    });
+  }
+
+  return diagnostics;
+}
+
 function openExtension() {
   // root: where to insert elements
   var root = html("div", ["cb-root"]);
@@ -1211,6 +1142,7 @@ function openExtension() {
         lineNumbers(),
         history(),
         closeBrackets(),
+        linter(plottingSpecLinter),
         EditorView.updateListener.of(function (e) {
           let editor_root = e.view.dom.parentNode as HTMLDivElement;
           if (editor_root.classList.contains("loading")) {

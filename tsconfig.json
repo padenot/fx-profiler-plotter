@@ -3,8 +3,10 @@
     "outDir": "./built",
     "allowJs": true,
     "target": "es2015",
+    "module": "esnext",
     "moduleResolution": "bundler",
-    "baseUrl": "node_modules"
+    "baseUrl": "node_modules",
+    "esModuleInterop": true
   },
   "include": ["./src/**/*"]
 }

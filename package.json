@@ -4,7 +4,7 @@
   "description": "",
   "main": "background_script.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
@@ -23,12 +23,17 @@
   "private": true,
   "devDependencies": {
     "@types/firefox-webext-browser": "^120.0.4",
+    "@types/jest": "^30.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.5",
     "vite": "^5.4.2"
   },
   "dependencies": {
-    "@codemirror/state": "github:codemirror/state",
+    "@codemirror/lint": "^6.9.2",
+    "@codemirror/state": "^6.5.2",
     "@types/firefox": "^0.0.34",
     "@types/plotly.js-basic-dist": "^1.54.4",
+    "chevrotain": "^11.0.3",
     "codemirror": "^6.0.1",
     "draggable": "^4.2.0",
     "typescript": "^5.5.4",
